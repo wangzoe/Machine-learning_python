@@ -1,0 +1,140 @@
+# use SVM to detect credicard fraud
+
+from sklearn import svm
+import pandas as pd
+import numpy as np
+from scipy.stats import multivariate_normal
+from sklearn import metrics
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import train_test_split
+
+
+def read_data(filepath, delimiter = ','):
+    d = pd.read_csv(filepath, delimiter = delimiter)
+    raw_data = pd.DataFrame(data = d)
+    print (raw_data.columns)
+
+    Y = pd.DataFrame(raw_data, columns = ['Class'])
+    Y = np.array(Y)
+    
+    train_data = raw_data.drop(['Class','Time','Amount'], axis = 1)
+    train_data = np.array(train_data)
+	# is it neccisary for SVM to drop this two columns?
+    
+    return(train_data,Y,raw_data)
+
+
+def undersample(raw_data):
+    raw_data = raw_data.drop(['Time','Amount'],axis = 1)
+    fraud_index = np.array(raw_data[raw_data['Class']==1].index)
+    normal_index = np.array(raw_data[raw_data['Class']==0].index)
+    num_frauds = len(fraud_index)
+    random_normal_indices = np.random.choice(normal_index,3*num_frauds,replace =
+                                             False)
+    # 用了0.25-0.75的正负例混合训练集后，测试集F1 = 94%；
+    # 全局预测结果，recall高，88%；precision很低，13%；
+    random_normal_indices = np.array(random_normal_indices)
+    undersample_indices = np.concatenate([fraud_index,random_normal_indices])
+
+    undersampled_data = raw_data.iloc[undersample_indices,:]
+    return(undersampled_data)
+
+
+def split_data(dataset):
+    data_features = dataset.ix[:,dataset.columns !='Class']
+    data_lable = dataset.ix[:,dataset.columns == 'Class']
+    x_train,x_test,y_train,y_test = train_test_split(data_features,
+                                                     data_lable,test_size = 0.3)
+    return(x_train,x_test,y_train,y_test)
+
+
+def svmTrain(dataset,y,c = 1):
+    model = svm.SVC(kernel = 'linear',C = c)
+    model.fit(dataset, y)
+    return(model)
+
+def searchParams(xtrain,ytrain,xtest,ytest):
+    # set up a bunch of C choices, and try on everyone to determine a best C
+    # select with the best f1 score
+    C = [0.01,0.1,0.5,0.75,1]
+    best_R = 0
+    best_C = 0
+    best_pred = np.array([])
+
+    for i in range(len(C)):
+        print('Train the model under kernel = linear,C = '+ str(C[i]))
+        model = svm.LinearSVC(C = C[i])
+        model.fit(xtrain,ytrain)
+        pred = model.predict(xtest)
+        recall = metrics.recall_score(ytest,pred)
+        print('The recall is ' + str(recall))
+
+        if recall > best_R:
+            best_R = recall
+            best_C = C[i]
+            best_pred = pred
+            best_model = model
+
+    return best_R, best_C, best_pred, best_model
+
+# when C = 0.5, have a lot of FP, but still with 53 FN with all dataset
+
+# have a try on PCA, whether the PCA will help with noise, or will decrease the
+# accurate of the data?
+
+def zeroMean(dataset):  
+    meanVal = np.mean(dataset,axis = 0)
+    data = dataset - meanVal
+    return data, meanVal
+ 
+def percentage2N(eigVals,percentage):
+    sortArray = np.sort(eigVals) #升序排列
+    sortArray = sortArray[-1::-1]   # 逆转，变为降序
+    arraySum = sum(sortArray)
+    topSum = 0
+    num = 0
+    
+    for i in sortArray:
+        topSum += i
+        num += 1
+        if topSum >= arraySum*percentage:
+            return num
+        
+
+
+def pca(dataset,percentage = 0.98):
+    data, meanVal = zeroMean(dataset)
+    covMat = np.cov(data,rowvar = 0)
+    eigVals,eigVectors = np.linalg.eig(np.mat(covMat))
+    n = percentage2N(eigVals,percentage)
+    eigValsIndice = np.argsort(eigVals) # np.argsort返回从小到大排列的索引值
+    n_eigValsIndice = eigValsIndice[-1:-(n+1):-1]   # 最大n个特征值的索引值
+    n_eigVectors = eigVectors[:,n_eigValsIndice]    # 最大的n个特征向量
+
+    lowData = np.dot(data, n_eigVectors)  # 低维特征空间的数据
+
+    recongData = (np.dot(lowData, n_eigVectors.T)) + np.array(meanVal)
+
+    return lowData, recongData, n_eigVectors
+
+
+
+def metric_dis(model,X,y,y_true,y_pred,scoring = 'f1_macro',cv=10):
+    f1 = metrics.f1_score(y_true,y_pred)
+    recall = metrics.recall_score(y_true,y_pred)
+    precision = metrics.precision_score(y_true,y_pred)
+    matrix = metrics.confusion_matrix(y_true,y_pred)
+    cv_score = cross_val_score(model,X,y,scoring = scoring, cv = cv)
+
+    print('The F1 score is: '+ str(f1))
+    print('Recall is: '+ str(recall))
+    print('Precision is: ' + str(precision))
+    print('Matrix: ' + str(matrix))
+    print('CV_score: '+ str(cv_score))
+
+
+# 使用低维数据训练后，FN显著下降，但是FP同样显著上升；recall表现比较好；
+
+# 如果使用PCA后，增加C，会怎样？nothing,对结果没有显著影响。。。
+# 使用cv后的结果稳定么？f1_score 在+-10%以内波动
+# 所以应该是需要cross_validation来测试，取recall平均值；
